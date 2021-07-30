@@ -1,0 +1,254 @@
+#!/usr/bin/env perl
+# Copyright (C) 2017–2021  Heph <srht@mrkeebs.eu>
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option) any
+# later version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>.
+
+=encoding utf8
+
+=head1 Atlas
+
+Atlas is a simple feed RSS generator from a gemini URL
+
+=cut
+
+use warnings;
+use strict;
+use v5.10.0;
+use IO::Socket::SSL;
+use URI;
+use XML::RSS;
+use CGI;
+use DateTime::Format::Strptime;
+use HTTP::Daemon;
+use HTTP::Status;
+
+## server is a simple http server that listen to localhost ( port 9000 )
+## and wait for a particular GET request that contains a gemini URL as a
+## query string, then return a feed rss of that gemini URL.
+sub server {
+    my $d = HTTP::Daemon->new(
+        LocalPort => 9000
+        ) || die;
+    print "Please contact me at: <URL:", $d->url, ">\n";
+
+    while (my $c = $d->accept) {
+        my $r = $c->get_request;
+        if ($r) {
+            if ($r->method eq 'GET') {
+                my $URL = $r->uri;
+                (my $query) = $URL =~ /(gemini:\/\/.*)/;
+                say "Trying to get feed rss from: $query";
+
+                ## some headers 
+                my $resp = HTTP::Response->new( 200, 'OK');
+                $resp->header('Content-Type' => 'text/xml');
+
+                ## Actually generate the feed
+                my $feed = main($query);
+
+                ## Feed the response with the feed and send it back
+                ## to the feed
+                $resp->content($feed);
+                $c->send_response($resp);
+            } else {
+                $c->send_error(RC_FORBIDDEN)
+            }
+        }
+        $c = undef;  # close connection
+    }
+}
+
+# This is a simple gemini client that retrive gemtext for converting it to html
+sub client {
+    my ( $remote_host, $remote_port, $abs_url ) = @_;
+    my $socket = IO::Socket::SSL->new(
+        PeerHost => $remote_host,
+        PeerPort => $remote_port,
+        SSL_verify_mode => SSL_VERIFY_NONE,
+        )
+        or die "error=$!, ssl_error=$SSL_ERROR";
+    
+    # send data to client
+    # gemini accept only URL\r\n as a request
+    # We need to check if it's the 1st request
+    my $request = "$abs_url\r\n";
+
+    print $socket $request;
+    
+    # read data sent from server
+    my $response;
+    while (my $line = <$socket>) {
+        $response .= $line;
+    }
+
+    $socket->close();
+    return $response;
+}
+
+# extract_links check each lines of the gemtext, find all the link ( => )
+# then check if it's a valid url
+# URI YYYY-MM-DD - TITLE
+sub extract_links {
+    my ($gemtext) = @_;
+    my @lines = split '\n', $gemtext;
+    my %links;
+
+    my $counter;
+    for my $line (@lines) {
+        if ($line =~ /^=>/) {
+            $line =~ s/^=>\s*//g;
+            $line =~ /^(\S+)(.*)/;
+            my $url = $1;
+            my $url_descr = $2;
+
+            # Check if url_descr have YYYY-MM-DD - TITLE
+            if ($url_descr =~ /\d{4}-\d{2}-\d{2}/) {
+                $links{$url} = $url_descr;
+
+                ## This is for reading only the 10 blog post,
+                ## needed for testing actually.
+                ## this value will be modiificable adding a URL query
+                last if ($counter++ == 10);
+            }
+        }
+    }
+    return %links
+}
+
+## This function roughly convert the gemtext retrivied from gemini
+## blog-post and convert it to html for create a feed RSS 2.0
+sub html_convert {
+    my ($gemtext) = @_;
+    my @lines = split '\n', $gemtext;
+    my $html_string;
+    for my $line ( @lines[1 .. $#lines] ) {
+        if ($line =~ /^###/) {
+            my $l = substr($line, 3);
+            $html_string .= '<h3>' . $l . ' </h3>' . "\n";
+        } elsif ($line =~ /^##/) {
+            my $l = substr($line, 2);
+            $html_string .= '<h2>' . $l . ' </h2>' . "\n";
+        } elsif ($line =~ /^#/) {
+            my $l = substr($line, 1);
+            $html_string .= '<h1>' . $l . '</h1>' . "\n";
+        } elsif ($line =~ /^\*/) {
+            my $l = substr($line, 1);
+            $html_string .= '<li>' . $l . ' </li>' . "\n";
+        } elsif ($line =~ /^>/) {
+            my $l = substr($line, 1);
+            $html_string .= '<q>' . $l . ' </q>' . "\n";
+        } elsif ($line =~ /^=>/) {
+            ## check if it's a valid link
+            if ($line =~ /.\.gmi [0-9]/) {
+                my $l = substr($line, 2);
+                my $link = $l =~ /(.*.gmi)(.*)/;
+                $html_string .= '<a href=' . "\"$1\">" . "$2" .' </a>' . "\n";
+            }
+        } else {
+            $html_string .= $line . "\n";
+        }
+    }
+    return $html_string;
+}
+
+## retrieve title from gemtext
+## needed for populate RSS <title> (MAIN title)
+sub get_feed_title {
+    my $gemtext = $_[0];
+    my @lines = split '\n', $gemtext;
+    my $title;
+    for my $line (@lines) {
+        if ($line =~ /^#/) {
+            $title = substr($line, 1);
+            return $title;
+        }
+    }
+    return "";
+}
+
+## Retrive title and update time of a RSS Entry
+## needed for populate rss <title> for each entry
+sub get_feed_info {
+    my $url_descr = $_[0];
+    my ($update_time) = $url_descr =~ /(\d{4}-\d?\d-\d?\d)/;
+    my ($entry_title) = $url_descr =~ /(?<=. )(.*)/g;
+
+    my $parser = DateTime::Format::Strptime->new(
+        pattern => '%F',
+        on_error => 'croak',
+        );
+    my $dt = $parser->parse_datetime($update_time);
+    return $dt, $entry_title;
+}
+
+sub main {
+    my $query = $_[0];
+    my $remote_port = 1965;
+
+    my $url = URI->new( $query );
+    my $remote_host = $url->authority;
+
+    ## Call the client for the 1st request
+    my $gemtext = client($remote_host, $remote_port, $query);
+
+    ## get title
+    my $feed_title = get_feed_title($gemtext);
+
+    ## Extract all the links from the 1st request
+    my %links = extract_links($gemtext);
+
+    sub uri_class {
+        my $uri = URI->new($_[0]);
+        my $base_uri = $_[1];
+        my $abs_url = $uri->abs($base_uri);
+        return $abs_url;
+    }
+
+    ##### NOW START CREATING RSS #####
+
+    my $rss = XML::RSS->new (version => '2.0');
+    $rss->channel(title => $feed_title,
+                  link => $query,
+                  description => 'No Channel Description', 
+        );
+
+
+    for (keys %links) {
+        
+        ## get absolute URL
+        my $abs_url = uri_class($_, $query);
+        
+        ## get gemtext
+        my $gemtext = client($remote_host, $remote_port, $abs_url);
+        
+        ## Retrive feed info
+        my ($dt, $title) = get_feed_info($links{$_});
+        
+        ## convert to html
+        my $html_entry = html_convert($gemtext);
+
+        $rss->add_item(title => "<![CDATA[\n$title]]>",
+                       pubDate => $dt,
+                       description => "<![CDATA[\n$html_entry]]>",
+            );
+    }
+
+    my $ret = $rss->as_string;
+    $rss->as_string;
+    print "feed generated\n";
+    return $ret;
+}
+
+
+### CALL SERVER
+server();
