@@ -27,8 +27,8 @@ WriteMakefile(
     resources => {
       repository => {
 	type => 'git',
-	url  => 'https://alexschroeder.ch/cgit/lupa-pona',
-	web  => 'https://alexschroeder.ch/cgit/lupa-pona/about/',
+	url  => 'https://git.mrkeebs.eu/atlas/',
+	web  => 'https://git.mrkeebs.eu/atlas//about/',
       },
     },
   },

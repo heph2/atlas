@@ -17,27 +17,111 @@
 
 =head1 Atlas
 
-Atlas is a simple feed RSS generator from a gemini URL
+Atlas is a simple feed rss generator. It acts as a http server listening on port 9000, when receive an HTTP GET request of this kind:
+'http://localhost:9000/?url=gemini://example.com'
+
+Atlas will retrieve the query URL, connect to the URL via a barebones gemini client and retrive all the URLs that match the specification for blog posts:
+
+absolute/relative URL YYYY-MM-DD - TITLE
+
+Then generate a feed rss and return it to the client.
+
+
+=head2 Installation
+
+Manual install:
+
+     perl Makefile.PL
+     make
+     make install
+
+=head2 Quickstart
+
+First you need to start the server:
+
+     atlas
+
+This starts the server in the foreground for C<localhost:9000>
+Then you need to add the gemini capsules that you want to follow
+in your favorite feed rss reader ( I'm using Elfeed ), in this way:
+
+http://localhost:9000/?url=gemini://example1.com
+http://localhost:9000/?url=gemini://example2.com
+http://localhost:9000/?url=gemini://example3.com
+
+You can also add another query that specify the number of articles/posts to retrieve ( default is 10 )
+
+http://localhost:9000/?url=gemini://example1.com&5
+
+This will retrive only 5 articles from example1.com
+
+=head2 Options
+
+These are the options Atlas knows about:
+
+=over
+
+=item C<--host> is the address to use; the default is 127.0.0.1
+
+=item C<--port> is the port to use; the default is 9000
+
+=back
+
+=head2 Dependencies
+
+There are some Perl dependencies you need to satisfy in order
+to run this program:
+
+=over
+
+=item L<IO::Socket::SSL>
+
+=item L<URI>
+
+=item L<CGI>
+
+=item L<XML::RSS>
+
+=item L<HTTP::Daemon>
+
+=item L<DateTime::Fromat::Strptime>
+
+=back
+
+=head2 License
+
+GNU Affero General Public License
 
 =cut
 
 use warnings;
 use strict;
 use v5.10.0;
+use Getopt::Long;
 use IO::Socket::SSL;
 use URI;
 use XML::RSS;
-use CGI;
 use DateTime::Format::Strptime;
 use HTTP::Daemon;
 use HTTP::Status;
 
+our $port ||= 9000;
+our $host ||= "127.0.0.1";
+
+my %args = ();
+GetOptions ("host=s"  => \$host,
+            "port=i"  => \$port)
+   or die("Error in command line arguments\n");
+
 ## server is a simple http server that listen to localhost ( port 9000 )
 ## and wait for a particular GET request that contains a gemini URL as a
 ## query string, then return a feed rss of that gemini URL.
-sub server {
+sub http_server {
+    my $host = $_[0];
+    my $port = $_[1];
     my $d = HTTP::Daemon->new(
-        LocalPort => 9000
+        LocalAddr => $host,
+        LocalPort => $port
         ) || die;
     print "Please contact me at: <URL:", $d->url, ">\n";
 
@@ -45,16 +129,25 @@ sub server {
         my $r = $c->get_request;
         if ($r) {
             if ($r->method eq 'GET') {
+                ## Handle query URL
                 my $URL = $r->uri;
-                (my $query) = $URL =~ /(gemini:\/\/.*)/;
-                say "Trying to get feed rss from: $query";
+                my $query_url;
+                my $query_counter;
+                if ($URL =~ /&/) {
+                    ($query_url) = $URL =~ /(gemini:\/\/.*)&/;
+                    ($query_counter) = $URL =~ /&(.*)/;
+                    say "Retrive $query_counter articles";
+                } else {
+                    ($query_url) = $URL =~ /(gemini:\/\/.*)/;
+                    $query_counter = 10;
+                }
+                say "Generating rss feed from: $query_url";
 
-                ## some headers 
+
                 my $resp = HTTP::Response->new( 200, 'OK');
                 $resp->header('Content-Type' => 'text/xml');
-
                 ## Actually generate the feed
-                my $feed = main($query);
+                my $feed = feed_generator($query_url, $query_counter);
 
                 ## Feed the response with the feed and send it back
                 ## to the feed
@@ -68,7 +161,7 @@ sub server {
     }
 }
 
-# This is a simple gemini client that retrive gemtext for converting it to html
+## This is a simple gemini client that retrive gemtext for converting it to html
 sub client {
     my ( $remote_host, $remote_port, $abs_url ) = @_;
     my $socket = IO::Socket::SSL->new(
@@ -99,11 +192,11 @@ sub client {
 # then check if it's a valid url
 # URI YYYY-MM-DD - TITLE
 sub extract_links {
-    my ($gemtext) = @_;
+    my ($gemtext, $number_of_articles) = @_;
     my @lines = split '\n', $gemtext;
     my %links;
 
-    my $counter;
+    my $counter = 1;
     for my $line (@lines) {
         if ($line =~ /^=>/) {
             $line =~ s/^=>\s*//g;
@@ -115,10 +208,10 @@ sub extract_links {
             if ($url_descr =~ /\d{4}-\d{2}-\d{2}/) {
                 $links{$url} = $url_descr;
 
-                ## This is for reading only the 10 blog post,
-                ## needed for testing actually.
-                ## this value will be modiificable adding a URL query
-                last if ($counter++ == 10);
+                ## This is for reading only number of articles
+                ## specified by the user. If nothing is specified in the URL
+                ## 10 will be the default value
+                last if ($counter++ == $number_of_articles);
             }
         }
     }
@@ -130,35 +223,67 @@ sub extract_links {
 sub html_convert {
     my ($gemtext) = @_;
     my @lines = split '\n', $gemtext;
-    my $html_string;
-    for my $line ( @lines[1 .. $#lines] ) {
-        if ($line =~ /^###/) {
-            my $l = substr($line, 3);
-            $html_string .= '<h3>' . $l . ' </h3>' . "\n";
-        } elsif ($line =~ /^##/) {
-            my $l = substr($line, 2);
-            $html_string .= '<h2>' . $l . ' </h2>' . "\n";
-        } elsif ($line =~ /^#/) {
-            my $l = substr($line, 1);
-            $html_string .= '<h1>' . $l . '</h1>' . "\n";
-        } elsif ($line =~ /^\*/) {
-            my $l = substr($line, 1);
-            $html_string .= '<li>' . $l . ' </li>' . "\n";
-        } elsif ($line =~ /^>/) {
-            my $l = substr($line, 1);
-            $html_string .= '<q>' . $l . ' </q>' . "\n";
-        } elsif ($line =~ /^=>/) {
-            ## check if it's a valid link
-            if ($line =~ /.\.gmi [0-9]/) {
-                my $l = substr($line, 2);
-                my $link = $l =~ /(.*.gmi)(.*)/;
-                $html_string .= '<a href=' . "\"$1\">" . "$2" .' </a>' . "\n";
-            }
-        } else {
-            $html_string .= $line . "\n";
+
+    my $preformatted = 0;
+    my $listmode = 0;
+    my $html_file;
+    for ( @lines[1 .. $#lines] ) {
+        ## handle links
+        if ($_ =~ /^=>/) {
+            $_ =~ s/^=>\s*//g;
+            my ($url, $descr) = $_ =~ /^(\S+)(.*)/;
+            $html_file .= "<p><a href=\"$url\">$descr</a></p>\n";
+            next;
+        }
+        
+        ## handle preformatted block
+        if ($_ =~ /^```/ && $preformatted == 0) {
+            $preformatted = 1; # true
+            $html_file .= "<pre>\n";
+            next;
+        } elsif ($_ =~ /^```/ && $preformatted == 1) {
+            $preformatted = 0; # false
+            $html_file .= "</pre>\n";
+            next;
+        } elsif ($preformatted == 1) {
+            $html_file .= "$_\n";
+            next;
+        }
+        
+        ## handle unordered lists
+        if ($_ =~ /^\*/ && $listmode == 0) {
+            $listmode = 1;
+            $html_file .= "<ul>\n";
+            $_ =~ s/^\*\s*//g;
+            $html_file .= "<li>$_</li>\n";
+            next;
+        } elsif ($_ =~ /^\*/) {
+            $_ =~ s/^\*\s*//g;
+            $html_file .= "<li>$_</li>\n";
+            next;
+        } elsif ($listmode == 1) {
+            $listmode = 0;
+            $html_file .= "</ul>\n";
+        }
+        
+        ## handle headings and normal paragraph
+        if ($_ =~ /^###/) {
+            $_ =~ s/^###\s*//g;
+            $html_file .= "<h3>$_</h3>\n";
+            next;
+        } elsif ($_ =~ /^##/) {
+            $_ =~ s/^##\s*//g;
+            $html_file .= "<h2>$_</h2>\n";
+            next;
+        } elsif ($_ =~ /^#/) {
+            $_ =~ s/^#\s*//g;
+            $html_file .= "<h1>$_</h1>\n";
+        } elsif ($_ ne "") {
+            $html_file .= "<p>$_</p>\n";
+            next;
         }
     }
-    return $html_string;
+    return $html_file;
 }
 
 ## retrieve title from gemtext
@@ -191,8 +316,10 @@ sub get_feed_info {
     return $dt, $entry_title;
 }
 
-sub main {
+## generate the feed rss 2.0
+sub feed_generator {
     my $query = $_[0];
+    my $counter = $_[1];  ## for the number of articles to download
     my $remote_port = 1965;
 
     my $url = URI->new( $query );
@@ -205,7 +332,7 @@ sub main {
     my $feed_title = get_feed_title($gemtext);
 
     ## Extract all the links from the 1st request
-    my %links = extract_links($gemtext);
+    my %links = extract_links($gemtext, $counter);
 
     sub uri_class {
         my $uri = URI->new($_[0]);
@@ -222,9 +349,7 @@ sub main {
                   description => 'No Channel Description', 
         );
 
-
     for (keys %links) {
-        
         ## get absolute URL
         my $abs_url = uri_class($_, $query);
         
@@ -239,6 +364,8 @@ sub main {
 
         $rss->add_item(title => "<![CDATA[\n$title]]>",
                        pubDate => $dt,
+                       link => $_,
+                       guid => $_,
                        description => "<![CDATA[\n$html_entry]]>",
             );
     }
@@ -251,4 +378,4 @@ sub main {
 
 
 ### CALL SERVER
-server();
+http_server($host, $port);
