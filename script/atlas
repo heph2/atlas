@@ -45,13 +45,10 @@ This starts the server in the foreground for C<localhost:9000>
 Then you need to add the gemini capsules that you want to follow
 in your favorite feed rss reader ( I'm using Elfeed ), in this way:
 
-=over
 
-=item http://localhost:9000/?url=gemini://example1.com
-=item http://localhost:9000/?url=gemini://example2.com
-=item http://localhost:9000/?url=gemini://example3.com
-
-=back
+	http://localhost:9000/?url=gemini://example1.com
+	http://localhost:9000/?url=gemini://example2.com
+	http://localhost:9000/?url=gemini://example3.com
 
 You can also add another query that specify the number of articles/posts to retrieve ( default is 10 )
 
