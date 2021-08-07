@@ -46,9 +46,9 @@ Then you need to add the gemini capsules that you want to follow
 in your favorite feed rss reader ( I'm using Elfeed ), in this way:
 
 
-	http://localhost:9000/?url=gemini://example1.com
-	http://localhost:9000/?url=gemini://example2.com
-	http://localhost:9000/?url=gemini://example3.com
+	   http://localhost:9000/?url=gemini://example1.com
+	   http://localhost:9000/?url=gemini://example2.com
+	   http://localhost:9000/?url=gemini://example3.com
 
 You can also add another query that specify the number of articles/posts to retrieve ( default is 10 )
 
@@ -78,8 +78,6 @@ to run this program:
 =item L<IO::Socket::SSL>
 
 =item L<URI>
-
-=item L<CGI>
 
 =item L<XML::RSS>
 
@@ -114,7 +112,7 @@ GetOptions ("host=s"  => \$host,
             "port=i"  => \$port)
    or die("Error in command line arguments\n");
 
-## server is a simple http server that listen to localhost ( port 9000 )
+## http_server is a simple http server that listen to localhost ( port 9000 )
 ## and wait for a particular GET request that contains a gemini URL as a
 ## query string, then return a feed rss of that gemini URL.
 sub http_server {
@@ -130,28 +128,10 @@ sub http_server {
         my $r = $c->get_request;
         if ($r) {
             if ($r->method eq 'GET') {
-                ## Handle query URL
                 my $URL = $r->uri;
-                my $query_url;
-                my $query_counter;
-                if ($URL =~ /&/) {
-                    ($query_url) = $URL =~ /(gemini:\/\/.*)&/;
-                    ($query_counter) = $URL =~ /&(.*)/;
-                    say "Retrive $query_counter articles";
-                } else {
-                    ($query_url) = $URL =~ /(gemini:\/\/.*)/;
-                    $query_counter = 10;
-                }
-                say "Generating rss feed from: $query_url";
-
-
+                my $feed = handle_queries($URL);
                 my $resp = HTTP::Response->new( 200, 'OK');
                 $resp->header('Content-Type' => 'text/xml');
-                ## Actually generate the feed
-                my $feed = feed_generator($query_url, $query_counter);
-
-                ## Feed the response with the feed and send it back
-                ## to the feed
                 $resp->content($feed);
                 $c->send_response($resp);
             } else {
@@ -162,7 +142,37 @@ sub http_server {
     }
 }
 
-## This is a simple gemini client that retrive gemtext for converting it to html
+## take the URL sent by the client and search for a query, then return
+## the feed
+## There are two queries available:
+## ?url=           => Generate an RSS feed for the given URL
+##
+## ?feed=          => Retrive already generated RSS feed and return it
+sub handle_queries {
+    my $URL = $_[0];
+    my ($query_url, $query_counter, $feed);
+
+    ## I have to check if another parameter is passed after the URL
+    ## if '&' is present it means that the user pass a number of articles
+    ## to fetch, if not then use default value (10)
+    if ($URL =~ /&/ && $URL =~ /\?url=/) {
+        ($query_url) = $URL =~ /(gemini:\/\/.*)&/;
+        ($query_counter) = $URL =~ /&(.*)/;
+        $feed = feed_generator($query_url, $query_counter);
+    } elsif ($URL =~ /\?feed=/ ) {
+        ($query_url) = $URL =~ /(gemini:\/\/.*)/;
+        $feed = get_feed($query_url);
+    } elsif ($URL =~ /\?url=/) {
+        ($query_url) = $URL =~ /(gemini:\/\/.*)/;
+        $query_counter = 10;
+        $feed = feed_generator($query_url, $query_counter);
+    } else {
+        $feed = "<h1>Please provide a valid gemini URL</h1>\n";
+    }
+    return $feed;
+}
+
+## barebones gemini client
 sub client {
     my ( $remote_host, $remote_port, $abs_url ) = @_;
     my $socket = IO::Socket::SSL->new(
@@ -174,7 +184,6 @@ sub client {
     
     # send data to client
     # gemini accept only URL\r\n as a request
-    # We need to check if it's the 1st request
     my $request = "$abs_url\r\n";
 
     print $socket $request;
@@ -315,6 +324,17 @@ sub get_feed_info {
         );
     my $dt = $parser->parse_datetime($update_time);
     return $dt, $entry_title;
+}
+
+## retrieve already generated feed rss
+sub get_feed {
+    my $query = $_[0];
+    my $remote_port = 1965;
+    my $url = URI->new( $query );
+    my $remote_host = $url->authority;
+    my $feed = client($remote_host, $remote_port, $query);
+    $feed =~ s/^(.*\n){1}//; # remove 1st line
+    return $feed;
 }
 
 ## generate the feed rss 2.0
