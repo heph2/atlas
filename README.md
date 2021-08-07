@@ -27,15 +27,18 @@ This starts the server in the foreground for `localhost:9000`
 Then you need to add the gemini capsules that you want to follow
 in your favorite feed rss reader ( I'm using Elfeed ), in this way:
 
-http://localhost:9000/?url=gemini://example1.com
-http://localhost:9000/?url=gemini://example2.com
-http://localhost:9000/?url=gemini://example3.com
+           http://localhost:9000/?url=gemini://example1.com
 
 You can also add another query that specify the number of articles/posts to retrieve ( default is 10 )
 
-http://localhost:9000/?url=gemini://example1.com&5
+     http://localhost:9000/?url=gemini://example1.com&5
 
 This will retrive only 5 articles from example1.com
+
+If the gemlog's author already provide an rss/atom feed, you can simply
+pass the URL of the feed using '?feed='
+
+     http://localhost:9000/?feed=gemini://example1.com/feed.xml
 
 ## Options
 
@@ -51,7 +54,6 @@ to run this program:
 
 - [IO::Socket::SSL](https://metacpan.org/pod/IO%3A%3ASocket%3A%3ASSL)
 - [URI](https://metacpan.org/pod/URI)
-- [CGI](https://metacpan.org/pod/CGI)
 - [XML::RSS](https://metacpan.org/pod/XML%3A%3ARSS)
 - [HTTP::Daemon](https://metacpan.org/pod/HTTP%3A%3ADaemon)
 - [DateTime::Fromat::Strptime](https://metacpan.org/pod/DateTime%3A%3AFromat%3A%3AStrptime)
