@@ -112,67 +112,50 @@ our $host ||= "127.0.0.1";
 my %args = ();
 GetOptions ("host=s"  => \$host,
             "port=i"  => \$port)
-   or die("Error in command line arguments\n");
+    or die("Error in command line arguments\n");
 
-## http_server is a simple http server that listen to localhost ( port 9000 )
-## and wait for a particular GET request that contains a gemini URL as a
-## query string, then return a feed rss of that gemini URL.
-sub http_server {
-    my $host = $_[0];
-    my $port = $_[1];
+sub ws {
+    my ( $host, $port ) = @_;
     my $d = HTTP::Daemon->new(
         LocalAddr => $host,
-        LocalPort => $port
-        ) || die;
+        LocalPort => $port,
+        );
     print "Please contact me at: <URL:", $d->url, ">\n";
 
     while (my $c = $d->accept) {
-        my $r = $c->get_request;
-        if ($r) {
-            if ($r->method eq 'GET') {
-                my $URL = $r->uri;
-                my $feed = handle_queries($URL);
-                my $resp = HTTP::Response->new( 200, 'OK');
+        my $req = $c->get_request;
+        my $resp;
+        if ($req->method eq 'GET' and $req->uri =~ /\?url=gemini:\/\//) {
+            # Now extract the URL from the get request
+            my ($query_url) = $req->uri =~ /(gemini:\/\/.*)/;
+            
+            # check if gemini client response is OK
+            my $abs_url = URI->new( $query_url );
+            my $remote_host = $abs_url->authority;
+            my $gemini_req = client($remote_host, 1965, $abs_url);
+
+            if ($gemini_req eq 'Host Down') {
+                print "Cannot process request: Check if Gemini host is up\n";
+                $resp = HTTP::Response->new( 400, 'Invalid Request!' );
+                $resp->content("Invalid Request\n");
+                $c->send_response($resp);
+            } else {
+                my $feed = feed_generator($query_url, 10);
+                $resp = HTTP::Response->new( 200, 'OK' );
                 $resp->header('Content-Type' => 'text/xml');
                 $resp->content($feed);
                 $c->send_response($resp);
-            } else {
-                $c->send_error(RC_FORBIDDEN)
             }
+        } else {
+            $resp = HTTP::Response->new( 400, 'Bad Request!' );
+            $resp->content("Invalid URL\n");
+            $c->send_response($resp);
+            print "Cannot process request: Check URL\n";
         }
-        $c = undef;  # close connection
+        $c = undef; # close connection
     }
 }
 
-## take the URL sent by the client and search for a query, then return
-## the feed
-## There are two queries available:
-## ?url=           => Generate an RSS feed for the given URL
-##
-## ?feed=          => Retrive already generated RSS feed and return it
-sub handle_queries {
-    my $URL = $_[0];
-    my ($query_url, $query_counter, $feed);
-
-    ## I have to check if another parameter is passed after the URL
-    ## if '&' is present it means that the user pass a number of articles
-    ## to fetch, if not then use default value (10)
-    if ($URL =~ /&/ && $URL =~ /\?url=/) {
-        ($query_url) = $URL =~ /(gemini:\/\/.*)&/;
-        ($query_counter) = $URL =~ /&(.*)/;
-        $feed = feed_generator($query_url, $query_counter);
-    } elsif ($URL =~ /\?feed=/ ) {
-        ($query_url) = $URL =~ /(gemini:\/\/.*)/;
-        $feed = get_feed($query_url);
-    } elsif ($URL =~ /\?url=/) {
-        ($query_url) = $URL =~ /(gemini:\/\/.*)/;
-        $query_counter = 10;
-        $feed = feed_generator($query_url, $query_counter);
-    } else {
-        $feed = "<h1>Please provide a valid gemini URL</h1>\n";
-    }
-    return $feed;
-}
 
 ## barebones gemini client
 sub client {
@@ -182,7 +165,8 @@ sub client {
         PeerPort => $remote_port,
         SSL_verify_mode => SSL_VERIFY_NONE,
         )
-        or die "error=$!, ssl_error=$SSL_ERROR";
+        #        or die "error=$!, ssl_error=$SSL_ERROR";
+        or return "Host Down";
     
     # send data to client
     # gemini accept only URL\r\n as a request
@@ -395,10 +379,11 @@ sub feed_generator {
 
     my $ret = $rss->as_string;
     $rss->as_string;
-    print "feed generated\n";
+    print "Feed generated\n";
     return $ret;
 }
 
 
 ### CALL SERVER
-http_server($host, $port);
+#http_server($host, $port);
+ws($host, $port);
